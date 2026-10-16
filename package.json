@@ -1,0 +1,28 @@
+{
+  "name": "baitapb1",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "esbuild src/app.js --bundle --platform=browser --outfile=extension/app.js",
+    "test": "node --test tests/*.cjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Thanhtn1801/baitapb1.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Thanhtn1801/baitapb1/issues"
+  },
+  "homepage": "https://github.com/Thanhtn1801/baitapb1#readme",
+  "dependencies": {
+    "exceljs": "4.4.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}

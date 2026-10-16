@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Excel → Flow → Drive",
+  "version": "0.2.0",
+  "description": "Đọc ảnh từ Excel, chuẩn bị ảnh cho Flow và xuất kết quả Drive.",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
+  "action": {
+    "default_title": "Mở Excel Flow"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "host_permissions": [
+    "https://flow.google.com/*"
+  ]
+}
