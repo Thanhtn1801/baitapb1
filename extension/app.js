@@ -34,54 +34,6 @@
     mod
   ));
 
-  // src/flow.js
-  async function prepareFlowImage(dataURL, filename, prompt) {
-    const visible = (el) => !!el.getClientRects().length;
-    const inputs = [...document.querySelectorAll("input[type=file]")].filter((el) => !el.disabled && (el.accept.includes("image") || !el.accept));
-    if (inputs.length !== 1) throw Error("Trong Flow, b\u1EA5m + r\u1ED3i m\u1EDF m\u1EE5c t\u1EA3i \u1EA3nh \u0111\u1EC3 hi\u1EC7n \xF4 ch\u1ECDn \u1EA3nh. C\u1EA7n \u0111\xFAng m\u1ED9t \xF4 t\u1EA3i \u1EA3nh, sau \u0111\xF3 b\u1EA5m G\u1EEDi sang Flow l\u1EA7n n\u1EEFa.");
-    const editors = [...document.querySelectorAll("textarea,[contenteditable=true],[role=textbox]")].filter(visible).filter((el) => !el.closest("[role=dialog]"));
-    const matches = editors.filter((el) => /Bạn muốn|want to|prompt|describe/i.test((el.getAttribute("placeholder") || "") + " " + (el.getAttribute("aria-label") || "") + " " + (el.getAttribute("data-placeholder") || "")));
-    const editor = matches.length === 1 ? matches[0] : editors.length === 1 ? editors[0] : null;
-    if (!editor) throw Error("Kh\xF4ng x\xE1c \u0111\u1ECBnh \u0111\u01B0\u1EE3c \xF4 prompt. \u0110\xF3ng h\u1ED9p tho\u1EA1i kh\xF4ng c\u1EA7n thi\u1EBFt r\u1ED3i th\u1EED l\u1EA1i.");
-    const blob = await (await fetch(dataURL)).blob();
-    const file = new File([blob], filename, { type: blob.type });
-    const transfer = new DataTransfer();
-    transfer.items.add(file);
-    inputs[0].files = transfer.files;
-    inputs[0].dispatchEvent(new Event("input", { bubbles: true }));
-    inputs[0].dispatchEvent(new Event("change", { bubbles: true }));
-    editor.focus();
-    if (editor instanceof HTMLTextAreaElement) {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(editor, prompt);
-      editor.dispatchEvent(new Event("input", { bubbles: true }));
-    } else {
-      const selection = window.getSelection();
-      const range = document.createRange();
-      range.selectNodeContents(editor);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      if (!document.execCommand("insertText", false, prompt)) throw Error("Kh\xF4ng \u0111i\u1EC1n \u0111\u01B0\u1EE3c prompt. H\xE3y nh\u1EADp prompt tr\u1EF1c ti\u1EBFp trong Flow.");
-    }
-    return "\u0110\xE3 g\u1EEDi s\u1EF1 ki\u1EC7n t\u1EA3i \u1EA3nh v\xE0 \u0111i\u1EC1n prompt. Ki\u1EC3m tra \u1EA3nh \u0111\xE3 hi\u1EC7n trong Flow tr\u01B0\u1EDBc khi b\u1EA5m t\u1EA1o video.";
-  }
-  async function sendToFlow(blob, row, prompt) {
-    const tabs = await chrome.tabs.query({ url: "https://flow.google.com/*" });
-    if (tabs.length !== 1) throw Error("H\xE3y m\u1EDF \u0111\xFAng m\u1ED9t tab d\u1EF1 \xE1n t\u1EA1i https://flow.google.com/.");
-    const dataURL = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(blob);
-    });
-    const result = await chrome.scripting.executeScript({ target: { tabId: tabs[0].id }, func: prepareFlowImage, args: [dataURL, `dong-${row}.${blob.type.split("/")[1] || "jpg"}`, prompt] });
-    await chrome.tabs.update(tabs[0].id, { active: true });
-    return result[0].result;
-  }
-  var init_flow = __esm({
-    "src/flow.js"() {
-    }
-  });
-
   // node_modules/exceljs/dist/exceljs.min.js
   var require_exceljs_min = __commonJS({
     "node_modules/exceljs/dist/exceljs.min.js"(exports, module) {
@@ -23775,164 +23727,453 @@
     }
   });
 
+  // src/shared.js
+  function validHTTPS(value) {
+    const u = new URL(value);
+    if (u.protocol !== "https:" || u.username || u.password) throw Error("C\u1EA7n link HTTPS h\u1EE3p l\u1EC7.");
+    return u;
+  }
+  function validClientID(value) {
+    if (!/^[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$/.test(value || "")) throw Error("Nh\u1EADp Google OAuth Client ID h\u1EE3p l\u1EC7, kh\xF4ng ph\u1EA3i Client Secret.");
+    return value;
+  }
+  function driveID(value) {
+    const match = String(value).match(/\/folders\/([A-Za-z0-9_-]+)/);
+    const id = match ? match[1] : value;
+    if (!/^[A-Za-z0-9_-]{10,}$/.test(id)) throw Error("ID ho\u1EB7c link th\u01B0 m\u1EE5c Drive kh\xF4ng h\u1EE3p l\u1EC7.");
+    return id;
+  }
+  async function rpc(message) {
+    const r = await chrome.runtime.sendMessage(message);
+    if (!r?.ok) throw Error(r?.error || "Extension m\u1EA5t k\u1EBFt n\u1ED1i. Reload trang Flow.");
+    return r.value;
+  }
+  function transitionAfterReload(job) {
+    if (["uploading", "rendering", "preparing"].includes(job.status)) return { ...job, status: job.video ? "video_ready" : "uncertain", error: job.video ? "Video \u0111\xE3 c\xF3, ti\u1EBFp t\u1EE5c t\u1EA3i Drive." : "Phi\xEAn tr\u01B0\u1EDBc b\u1ECB gi\xE1n \u0111o\u1EA1n. Ki\u1EC3m tra Flow tr\u01B0\u1EDBc khi th\u1EED l\u1EA1i \u0111\u1EC3 tr\xE1nh t\u1EA1o tr\xF9ng video." };
+    return job;
+  }
+  var init_shared = __esm({
+    "src/shared.js"() {
+    }
+  });
+
+  // src/store.js
+  async function loadState() {
+    const db = await database;
+    return new Promise((resolve, reject) => {
+      const r = db.transaction("state").objectStore("state").get("current");
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+    });
+  }
+  async function saveState(value) {
+    const db = await database;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("state", "readwrite");
+      tx.objectStore("state").put(value, "current");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+  var database;
+  var init_store = __esm({
+    "src/store.js"() {
+      database = new Promise((resolve, reject) => {
+        const r = indexedDB.open("flow-studio", 1);
+        r.onupgradeneeded = () => r.result.createObjectStore("state");
+        r.onsuccess = () => resolve(r.result);
+        r.onerror = () => reject(r.error);
+      });
+    }
+  });
+
   // src/app.js
   var require_app = __commonJS({
     "src/app.js"() {
-      init_flow();
       var import_exceljs = __toESM(require_exceljs_min());
       var import_core = __toESM(require_core());
+      init_shared();
+      init_store();
       var $ = (id) => document.getElementById(id);
+      var tabID = Number(new URLSearchParams(location.search).get("tab"));
+      var defaults = { clientID: "", folder: "", timeoutMinutes: 15, promptSelector: 'textarea,[contenteditable="true"][role="textbox"]', fileSelector: 'input[type="file"]', attachmentSelector: "form img", removeSelector: "", addSelector: "", uploadSelector: "", generateSelector: "", summarySelector: "", videoSelector: "video" };
+      var fields = Object.keys(defaults);
+      var settings = { ...defaults };
+      var snapshot = null;
       var book;
-      var sheet;
-      var column;
-      var items = [];
-      var urls = [];
+      var jobs = [];
+      var running = false;
+      var stopping = false;
+      var connected = false;
+      var previews = /* @__PURE__ */ new Map();
+      var names = { pending: "Ch\u1EDD x\u1EED l\xFD", preparing: "\u0110ang \u0111\u1ECDc \u1EA3nh", rendering: "Flow \u0111ang t\u1EA1o", video_ready: "Video s\u1EB5n s\xE0ng", uploading: "\u0110ang t\u1EA3i Drive", done: "Ho\xE0n th\xE0nh", error: "L\u1ED7i", uncertain: "C\u1EA7n ki\u1EC3m tra Flow" };
       var status = (text) => $("status").textContent = text;
-      function cleanup() {
-        urls.forEach(URL.revokeObjectURL);
-        urls = [];
-        $("rows").replaceChildren();
-        items = [];
-        $("export").disabled = true;
+      function page(name) {
+        document.querySelectorAll(".page").forEach((el) => el.hidden = el.id !== name);
+        document.querySelectorAll(".tab").forEach((el) => el.classList.toggle("active", el.dataset.page === name));
       }
-      function columns() {
-        cleanup();
-        sheet = book.getWorksheet(Number($("sheet").value));
+      document.querySelectorAll(".tab").forEach((el) => el.onclick = () => page(el.dataset.page));
+      function readSettings() {
+        const s = {};
+        for (const k of fields) s[k] = $(k).value.trim();
+        s.timeoutMinutes = Number(s.timeoutMinutes);
+        if (!Number.isFinite(s.timeoutMinutes) || s.timeoutMinutes < 1 || s.timeoutMinutes > 60) throw Error("Th\u1EDDi gian ch\u1EDD t\u1EEB 1 \u0111\u1EBFn 60 ph\xFAt.");
+        validClientID(s.clientID);
+        if (s.folder) driveID(s.folder);
+        return s;
+      }
+      async function persist() {
+        if (snapshot) {
+          snapshot.jobs = jobs;
+          await saveState(snapshot);
+        }
+      }
+      function controls() {
+        for (const id of ["excel", "sheet", "column", "prompt", "calibrate", "connect", "disconnect", "saveSettings", ...fields]) $(id).disabled = running;
+        $("start").hidden = running;
+        $("start").disabled = !jobs.some((x) => ["pending", "video_ready"].includes(x.status));
+        $("stop").hidden = !running;
+        $("stop").disabled = stopping;
+        $("export").disabled = !jobs.some((x) => x.drive);
+        $("start").textContent = jobs.some((x) => x.status === "done") ? "Ti\u1EBFp t\u1EE5c h\xE0ng \u0111\u1EE3i \u2192" : "B\u1EAFt \u0111\u1EA7u t\u1EF1 \u0111\u1ED9ng \u2192";
+      }
+      function draw() {
+        $("total").textContent = jobs.length;
+        $("done").textContent = jobs.filter((x) => x.status === "done").length;
+        $("failed").textContent = jobs.filter((x) => ["error", "uncertain"].includes(x.status)).length;
+        $("count").textContent = `${jobs.length} VIDEO`;
+        $("bar").style.width = `${jobs.length ? 100 * jobs.filter((x) => x.status === "done").length / jobs.length : 0}%`;
+        if (jobs.length) {
+          $("rows").replaceChildren();
+          for (const job of jobs) {
+            const card = document.createElement("article");
+            card.className = "job " + job.status;
+            const thumb = document.createElement("div");
+            thumb.className = "thumb";
+            thumb.textContent = "\u25A7";
+            if (previews.has(job.id)) {
+              const img = document.createElement("img");
+              img.src = previews.get(job.id);
+              img.alt = `\u1EA2nh d\xF2ng ${job.row}`;
+              thumb.replaceChildren(img);
+            }
+            const body = document.createElement("div");
+            body.className = "job-body";
+            const title = document.createElement("div");
+            title.className = "job-title";
+            const strong = document.createElement("strong");
+            strong.textContent = `D\xF2ng ${job.row}`;
+            const state = document.createElement("span");
+            state.textContent = names[job.status] + (job.status === "uploading" && job.progress ? ` ${job.progress}%` : "");
+            title.append(strong, state);
+            const source = document.createElement("p");
+            source.textContent = job.source;
+            body.append(title, source);
+            if (job.error) {
+              const error = document.createElement("p");
+              error.className = "error";
+              error.textContent = job.error;
+              body.append(error);
+            }
+            if (job.drive) {
+              const a = document.createElement("a");
+              a.href = job.drive;
+              a.target = "_blank";
+              a.rel = "noopener noreferrer";
+              a.textContent = "Xem video tr\xEAn Drive \u2197";
+              body.append(a);
+            }
+            if (["error", "uncertain"].includes(job.status) && !running) {
+              const retry = document.createElement("button");
+              retry.textContent = job.video ? "Th\u1EED t\u1EA3i Drive l\u1EA1i" : "\u0110\xE3 ki\u1EC3m tra Flow \xB7 th\u1EED l\u1EA1i";
+              retry.onclick = async () => {
+                if (job.status === "uncertain" && !confirm("Flow c\xF3 th\u1EC3 \u0111\xE3 t\u1EA1o video v\xE0 tr\u1EEB t\xEDn d\u1EE5ng. Ch\u1EC9 ti\u1EBFp t\u1EE5c n\u1EBFu b\u1EA1n \u0111\xE3 ki\u1EC3m tra v\xE0 mu\u1ED1n g\u1EEDi l\u1EA1i l\u1EC7nh t\u1EA1o.")) return;
+                job.status = job.video ? "video_ready" : "pending";
+                job.error = "";
+                await persist();
+                draw();
+              };
+              body.append(retry);
+            }
+            card.append(thumb, body);
+            $("rows").append(card);
+          }
+        }
+        controls();
+      }
+      function sheetOptions() {
+        $("sheet").replaceChildren();
+        for (const s of book.worksheets) {
+          const o = document.createElement("option");
+          o.value = s.id;
+          o.textContent = s.name;
+          $("sheet").append(o);
+        }
+        $("sheet").value = snapshot.sheetID || book.worksheets[0]?.id;
+        columnOptions();
+      }
+      function columnOptions() {
+        const sheet = book.getWorksheet(Number($("sheet").value));
         $("column").replaceChildren();
         for (let c = 1; c <= sheet.columnCount; c++) {
           const o = document.createElement("option");
           o.value = c;
-          o.textContent = `${c}: ${(0, import_core.cellText)(sheet.getCell(1, c)) || "(kh\xF4ng ti\xEAu \u0111\u1EC1)"}`;
+          o.textContent = (0, import_core.cellText)(sheet.getCell(1, c)) || `C\u1ED9t ${c}`;
           $("column").append(o);
         }
       }
-      $("excel").onchange = async () => {
-        try {
-          cleanup();
-          $("mapping").hidden = true;
-          book = new import_exceljs.default.Workbook();
-          await book.xlsx.load(await $("excel").files[0].arrayBuffer());
-          $("sheet").replaceChildren();
-          for (const s of book.worksheets) {
-            const o = document.createElement("option");
-            o.value = s.id;
-            o.textContent = s.name;
-            $("sheet").append(o);
-          }
-          columns();
-          $("mapping").hidden = false;
-          status("Ch\u1ECDn c\u1ED9t \u1EA3nh. D\xF2ng 1 \u0111\u01B0\u1EE3c d\xF9ng l\xE0m ti\xEAu \u0111\u1EC1.");
-        } catch (e) {
-          status(e.message);
-        }
-      };
-      $("sheet").onchange = columns;
-      $("load").onclick = async () => {
-        column = Number($("column").value);
-        const candidates = [];
-        sheet.eachRow((row, n) => {
-          if (n > 1 && (0, import_core.cellText)(row.getCell(column)).trim()) candidates.push({ n, source: (0, import_core.cellText)(row.getCell(column)).trim() });
+      async function mapRows() {
+        if (running) return;
+        const sheetID = Number($("sheet").value), column = Number($("column").value);
+        jobs = [];
+        book.getWorksheet(sheetID).eachRow((row, n) => {
+          const source = (0, import_core.cellText)(row.getCell(column)).trim();
+          if (n > 1 && source) jobs.push({ id: crypto.randomUUID(), row: n, source, status: "pending" });
         });
-        let origins;
+        snapshot.sheetID = sheetID;
+        snapshot.column = column;
+        await persist();
+        draw();
+        status(`\u0110\xE3 \u0111\u1ECDc ${jobs.length} d\xF2ng. C\u1EA5u h\xECnh Drive r\u1ED3i b\u1EA5m B\u1EAFt \u0111\u1EA7u t\u1EF1 \u0111\u1ED9ng.`);
+      }
+      $("sheet").onchange = () => {
+        columnOptions();
+        mapRows().catch((e) => status(e.message));
+      };
+      $("column").onchange = () => mapRows().catch((e) => status(e.message));
+      async function importFile(file) {
+        if (running || !file) return;
         try {
-          origins = [...new Set(candidates.map((x) => (0, import_core.imageURL)(x.source).origin + "/*"))];
+          if (!/\.xlsx$/i.test(file.name) || file.size > 20 * 1024 * 1024) throw Error("Ch\u1ECDn file .xlsx t\u1ED1i \u0111a 20 MB.");
+          if (jobs.some((x) => x.drive) && !confirm("Thay file hi\u1EC7n t\u1EA1i? H\xE3y xu\u1EA5t k\u1EBFt qu\u1EA3 tr\u01B0\u1EDBc n\u1EBFu mu\u1ED1n gi\u1EEF l\u1EA1i.")) return;
+          const buffer = await file.arrayBuffer();
+          const next = new import_exceljs.default.Workbook();
+          await next.xlsx.load(buffer);
+          if (!next.worksheets.length) throw Error("File kh\xF4ng c\xF3 trang t\xEDnh.");
+          book = next;
+          snapshot = { buffer, name: file.name };
+          for (const u of previews.values()) URL.revokeObjectURL(u);
+          previews.clear();
+          $("fileName").textContent = file.name;
+          $("fileHint").textContent = `${(file.size / 1024).toFixed(0)} KB \xB7 \u0110\xE3 s\u1EB5n s\xE0ng`;
+          $("mapping").hidden = false;
+          sheetOptions();
+          const opts = [...$("column").options];
+          const guessed = opts.find((x) => /ảnh|image|photo|picture/i.test(x.textContent));
+          if (guessed) $("column").value = guessed.value;
+          await mapRows();
         } catch (e) {
           status(e.message);
-          return;
         }
-        if (origins.length && !await chrome.permissions.request({ origins })) {
-          status("Ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5p quy\u1EC1n \u0111\u1ECDc c\xE1c \u0111\u1ECBa ch\u1EC9 \u1EA3nh.");
-          return;
+      }
+      $("prompt").onchange = () => {
+        if (snapshot) {
+          snapshot.prompt = $("prompt").value;
+          persist().catch((e) => status(e.message));
         }
-        cleanup();
-        $("load").disabled = true;
-        $("sheet").disabled = true;
-        $("column").disabled = true;
-        $("excel").disabled = true;
+      };
+      $("excel").onchange = () => importFile($("excel").files[0]);
+      var drop = $("dropzone");
+      drop.ondragover = (e) => {
+        e.preventDefault();
+        drop.classList.add("drag");
+      };
+      drop.ondragleave = () => drop.classList.remove("drag");
+      drop.ondrop = (e) => {
+        e.preventDefault();
+        drop.classList.remove("drag");
+        importFile(e.dataTransfer.files[0]);
+      };
+      $("calibrate").onclick = async () => {
         try {
-          for (const item of candidates) {
-            items.push(item);
-            const card = document.createElement("article");
-            const title = document.createElement("strong");
-            title.textContent = `D\xF2ng ${item.n}`;
-            card.append(title);
-            const note = document.createElement("p");
-            card.append(note);
-            $("rows").append(card);
-            try {
-              const response = await fetch(item.source, { credentials: "omit", signal: AbortSignal.timeout(3e4) });
-              if (!response.ok) throw Error(`HTTP ${response.status}`);
-              if (!response.headers.get("content-type")?.startsWith("image/")) throw Error("Link kh\xF4ng tr\u1EA3 v\u1EC1 \u1EA3nh tr\u1EF1c ti\u1EBFp. H\xE3y d\xF9ng URL \u1EA3nh thay cho link b\xE0i \u0111\u0103ng Facebook.");
-              const blob = await response.blob();
-              if (blob.size > 25 * 1024 * 1024) throw Error("\u1EA2nh v\u01B0\u1EE3t qu\xE1 25 MB.");
-              const url = URL.createObjectURL(blob);
-              urls.push(url);
-              const img = document.createElement("img");
-              img.src = url;
-              img.alt = `\u1EA2nh d\xF2ng ${item.n}`;
-              card.append(img);
-              await img.decode();
-              const download = document.createElement("a");
-              download.href = url;
-              download.download = `dong-${item.n}.${blob.type.split("/")[1]?.replace("jpeg", "jpg") || "jpg"}`;
-              download.textContent = "T\u1EA3i \u1EA3nh \u0111\u1EC3 \u0111\u01B0a v\xE0o Flow";
-              card.append(download);
-              const send = document.createElement("button");
-              send.textContent = "G\u1EEDi \u1EA3nh v\xE0 prompt sang Flow";
-              send.onclick = async () => {
-                send.disabled = true;
-                try {
-                  note.textContent = await sendToFlow(blob, item.n, $("prompt").value);
-                } catch (e) {
-                  note.textContent = e.message;
-                } finally {
-                  send.disabled = false;
-                }
-              };
-              card.append(document.createElement("br"), send);
-              note.textContent = "\u1EA2nh \u0111\xE3 \u0111\u1ECDc \u0111\u01B0\u1EE3c.";
-            } catch (e) {
-              note.textContent = e.message;
-              note.className = "error";
-            }
-            const input = document.createElement("input");
-            input.type = "url";
-            input.placeholder = "D\xE1n link video Google Drive c\u1EE7a d\xF2ng n\xE0y";
-            input.setAttribute("aria-label", `Link video Drive d\xF2ng ${item.n}`);
-            input.oninput = () => {
-              item.drive = input.value.trim();
-            };
-            card.append(document.createElement("br"), input);
-            status(`\u0110\xE3 x\u1EED l\xFD ${items.length}/${candidates.length} d\xF2ng.`);
-          }
-          $("export").disabled = !items.length;
+          if (running) throw Error("D\u1EEBng h\xE0ng \u0111\u1EE3i tr\u01B0\u1EDBc khi nh\u1EADn di\u1EC7n giao di\u1EC7n.");
+          const result = await rpc({ type: "CALIBRATE", tabID });
+          if (!result?.ok) throw Error(result?.error || "Kh\xF4ng nh\u1EADn di\u1EC7n \u0111\u01B0\u1EE3c giao di\u1EC7n.");
+          settings = { ...settings, ...result.value };
+          for (const key of fields) $(key).value = settings[key];
+          await chrome.storage.local.set({ settings });
+          status("\u0110\xE3 ghi nh\u1EDB c\xE1c n\xFAt Flow. X\xF3a \u1EA3nh m\u1EABu ho\u1EB7c \u0111\u1EC3 extension t\u1EF1 x\xF3a khi ch\u1EA1y.");
+        } catch (e) {
+          status(e.message);
+        }
+      };
+      $("saveSettings").onclick = async () => {
+        try {
+          settings = readSettings();
+          await chrome.storage.local.set({ settings });
+          status("\u0110\xE3 l\u01B0u c\u1EA5u h\xECnh.");
+        } catch (e) {
+          status(e.message);
+        }
+      };
+      async function auth() {
+        const value = await rpc({ type: "AUTH_STATUS" });
+        connected = value.connected;
+        $("driveBadge").textContent = connected ? "\u0110\xC3 K\u1EBET N\u1ED0I" : "CH\u01AFA K\u1EBET N\u1ED0I";
+        $("redirect").textContent = value.redirect;
+      }
+      $("connect").onclick = async () => {
+        try {
+          const id = $("clientID").value.trim();
+          validClientID(id);
+          $("connect").disabled = true;
+          await rpc({ type: "CONNECT", clientID: id });
+          settings = { ...settings, clientID: id };
+          await chrome.storage.local.set({ settings });
+          await auth();
+          status("\u0110\xE3 k\u1EBFt n\u1ED1i Drive. B\u1EA1n c\xF3 th\u1EC3 b\u1EAFt \u0111\u1EA7u h\xE0ng \u0111\u1EE3i.");
+        } catch (e) {
+          status(e.message);
         } finally {
-          $("load").disabled = false;
-          $("sheet").disabled = false;
-          $("column").disabled = false;
-          $("excel").disabled = false;
+          $("connect").disabled = false;
         }
       };
-      $("export").onclick = async () => {
+      $("disconnect").onclick = async () => {
         try {
-          const completed = items.filter((x) => x.drive);
-          for (const item of completed) (0, import_core.driveURL)(item.drive);
-          const output = new import_exceljs.default.Workbook();
-          await output.xlsx.load(await $("excel").files[0].arrayBuffer());
-          const target = output.getWorksheet(sheet.id);
-          for (const item of completed) target.getCell(item.n, column).value = { text: item.drive, hyperlink: item.drive };
-          const blob = new Blob([await output.xlsx.writeBuffer()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-          const url = URL.createObjectURL(blob);
-          urls.push(url);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = "ket-qua-video.xlsx";
-          a.click();
-          status(`\u0110\xE3 xu\u1EA5t: ${completed.length} link \u0111\u01B0\u1EE3c thay; ${items.length - completed.length} d\xF2ng ch\u01B0a c\xF3 video gi\u1EEF nguy\xEAn link \u1EA3nh.`);
+          if (running) throw Error("D\u1EEBng h\xE0ng \u0111\u1EE3i tr\u01B0\u1EDBc khi ng\u1EAFt Drive.");
+          await rpc({ type: "DISCONNECT" });
+          await auth();
+          status("\u0110\xE3 ng\u1EAFt k\u1EBFt n\u1ED1i Drive.");
         } catch (e) {
           status(e.message);
         }
       };
+      chrome.runtime.onMessage.addListener((m, sender) => {
+        if (sender.id !== chrome.runtime.id || m.type !== "JOB_UPDATE" || m.tabID !== tabID) return;
+        const job = jobs.find((x) => x.id === m.id);
+        if (!job) return;
+        job.status = m.status;
+        if (m.video) job.video = m.video;
+        if (m.progress) job.progress = m.progress;
+        persist().catch((e) => status(e.message));
+        draw();
+      });
+      $("start").onclick = async () => {
+        try {
+          if (!tabID) throw Error("M\u1EDF extension b\u1EB1ng bi\u1EC3u t\u01B0\u1EE3ng tr\xEAn trang Flow.");
+          settings = readSettings();
+          const pending = jobs.filter((x) => ["pending", "video_ready"].includes(x.status));
+          const origins = [.../* @__PURE__ */ new Set([...pending.filter((x) => !x.video).map((x) => validHTTPS(x.source).origin + "/*"), "https://*.googleusercontent.com/*", "https://storage.googleapis.com/*"])];
+          if (origins.length && !await chrome.permissions.request({ origins })) throw Error("C\u1EA7n c\u1EA5p quy\u1EC1n \u0111\u1ECDc c\xE1c \u0111\u1ECBa ch\u1EC9 \u1EA3nh trong Excel.");
+          await auth();
+          if (!connected) {
+            page("settings");
+            throw Error("K\u1EBFt n\u1ED1i Google Drive tr\u01B0\u1EDBc khi ch\u1EA1y.");
+          }
+          await chrome.storage.local.set({ settings });
+          await navigator.locks.request("flow-studio-run", { ifAvailable: true }, async (lock) => {
+            if (!lock) throw Error("C\xF3 h\xE0ng \u0111\u1EE3i \u0111ang ch\u1EA1y trong tab Flow kh\xE1c.");
+            running = true;
+            stopping = false;
+            draw();
+            try {
+              for (const job of jobs) {
+                if (stopping) break;
+                if (!["pending", "video_ready"].includes(job.status)) continue;
+                try {
+                  job.error = "";
+                  let image;
+                  if (!job.video) {
+                    job.status = "preparing";
+                    await persist();
+                    draw();
+                    status(`\u0110\u1ECDc \u1EA3nh d\xF2ng ${job.row}\u2026`);
+                    image = await rpc({ type: "FETCH_IMAGE", url: job.source });
+                    const url = `data:${image.mime};base64,${image.base64}`;
+                    previews.set(job.id, url);
+                    if (stopping) {
+                      job.status = "pending";
+                      break;
+                    }
+                  }
+                  draw();
+                  status(`\u0110ang x\u1EED l\xFD d\xF2ng ${job.row}. Gi\u1EEF tab Flow m\u1EDF.`);
+                  await rpc({ type: "PREPARE_RUN", tabID });
+                  const result = await chrome.tabs.sendMessage(tabID, { type: "RUN_FLOW", job: { ...job, image, prompt: $("prompt").value.trim() }, settings }, { frameId: 0 });
+                  if (!result?.ok) throw Error(result?.error || "Flow kh\xF4ng tr\u1EA3 k\u1EBFt qu\u1EA3.");
+                  job.drive = (0, import_core.driveURL)(result.value.drive);
+                  job.status = "done";
+                  job.error = "";
+                  delete job.video;
+                  await persist();
+                  draw();
+                } catch (e) {
+                  job.error = e.message;
+                  job.status = job.video ? "error" : job.status === "rendering" ? "uncertain" : "error";
+                  await persist();
+                  draw();
+                  status(`D\u1EEBng t\u1EA1i d\xF2ng ${job.row}: ${e.message}`);
+                  break;
+                }
+              }
+            } finally {
+              running = false;
+              stopping = false;
+              await persist();
+              draw();
+              if (jobs.length && jobs.every((x) => x.status === "done")) {
+                status("Ho\xE0n th\xE0nh t\u1EA5t c\u1EA3 video. \u0110ang xu\u1EA5t Excel\u2026");
+                await exportFile();
+              }
+            }
+          });
+        } catch (e) {
+          status(e.message);
+        }
+      };
+      $("stop").onclick = async () => {
+        stopping = true;
+        controls();
+        status("\u0110ang d\u1EEBng. Video \u0111\xE3 g\u1EEDi t\u1EA1o v\u1EABn render tr\xEAn Flow.");
+        try {
+          await rpc({ type: "STOP", tabID });
+        } catch (e) {
+          status(e.message);
+        }
+      };
+      async function exportFile() {
+        const output = new import_exceljs.default.Workbook();
+        await output.xlsx.load(snapshot.buffer);
+        const sheet = output.getWorksheet(snapshot.sheetID);
+        let count = 0;
+        for (const job of jobs) {
+          if (job.drive) {
+            const url2 = (0, import_core.driveURL)(job.drive);
+            sheet.getCell(job.row, snapshot.column).value = { text: url2, hyperlink: url2 };
+            count++;
+          }
+        }
+        const blob = new Blob([await output.xlsx.writeBuffer()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = snapshot.name.replace(/\.xlsx$/i, "") + "-video.xlsx";
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 3e4);
+        status(`\u0110\xE3 xu\u1EA5t ${count}/${jobs.length} link video. D\xF2ng ch\u01B0a ho\xE0n th\xE0nh gi\u1EEF nguy\xEAn link \u1EA3nh.`);
+      }
+      $("export").onclick = () => exportFile().catch((e) => status(e.message));
+      async function init() {
+        const stored = await chrome.storage.local.get("settings");
+        settings = { ...defaults, ...stored.settings };
+        for (const key of fields) $(key).value = settings[key];
+        await auth();
+        snapshot = await loadState();
+        if (snapshot) {
+          book = new import_exceljs.default.Workbook();
+          await book.xlsx.load(snapshot.buffer);
+          if (snapshot.prompt) $("prompt").value = snapshot.prompt;
+          jobs = (snapshot.jobs || []).map(transitionAfterReload);
+          $("fileName").textContent = snapshot.name;
+          $("fileHint").textContent = "\u0110\xE3 kh\xF4i ph\u1EE5c phi\xEAn l\xE0m vi\u1EC7c";
+          $("mapping").hidden = false;
+          sheetOptions();
+          $("column").value = snapshot.column;
+          draw();
+          status("\u0110\xE3 kh\xF4i ph\u1EE5c h\xE0ng \u0111\u1EE3i. D\xF2ng b\u1ECB gi\xE1n \u0111o\u1EA1n c\u1EA7n ki\u1EC3m tra tr\u01B0\u1EDBc khi ch\u1EA1y l\u1EA1i.");
+        }
+      }
+      init().catch((e) => status(e.message));
     }
   });
   require_app();

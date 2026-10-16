@@ -1,11 +1,13 @@
 {
   "name": "baitapb1",
-  "version": "1.0.0",
+  "version": "0.3.0",
   "description": "",
   "main": "index.js",
   "scripts": {
-    "build": "esbuild src/app.js --bundle --platform=browser --outfile=extension/app.js",
-    "test": "node --test tests/*.cjs"
+    "build": "node scripts/build.cjs",
+    "test": "node --test tests/*.cjs",
+    "test:browser": "playwright test",
+    "package": "npm run build && python3 scripts/package.py"
   },
   "repository": {
     "type": "git",
@@ -23,6 +25,7 @@
     "exceljs": "4.4.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.58.2",
     "esbuild": "0.25.12"
   }
 }

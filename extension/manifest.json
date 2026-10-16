@@ -1,22 +1,48 @@
 {
   "manifest_version": 3,
-  "name": "Excel → Flow → Drive",
-  "version": "0.2.0",
-  "description": "Đọc ảnh từ Excel, chuẩn bị ảnh cho Flow và xuất kết quả Drive.",
+  "name": "Flow Studio • Excel to Video",
+  "version": "0.3.0",
+  "description": "Bảng điều khiển trong Flow: Excel → ảnh → video → Google Drive → Excel.",
   "permissions": [
-    "activeTab",
-    "scripting"
+    "storage",
+    "identity"
+  ],
+  "host_permissions": [
+    "https://flow.google.com/*",
+    "https://www.googleapis.com/*",
+    "https://oauth2.googleapis.com/*"
   ],
   "optional_host_permissions": [
     "https://*/*"
   ],
   "action": {
-    "default_title": "Mở Excel Flow"
+    "default_title": "Ẩn / hiện Flow Studio"
   },
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
-  "host_permissions": [
-    "https://flow.google.com/*"
+  "content_scripts": [
+    {
+      "matches": [
+        "https://flow.google.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "index.html",
+        "app.js",
+        "style.css"
+      ],
+      "matches": [
+        "https://flow.google.com/*"
+      ]
+    }
   ]
 }
